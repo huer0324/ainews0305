@@ -9,6 +9,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -56,11 +58,17 @@ public class ReadwiseNewsFetcher {
     }
 
     public static void main(String[] args) {
+        if (args.length != 1 || (!args[0].equals("0") && !args[0].equals("1"))) {
+            System.out.println("please start append 0[test] or 1[start].");
+            return;
+        }
+        boolean test = args[0].equals("0");
+
         logger.info("启动 Readwise News Fetcher...");
 
         // 启动直接发送一次
         try {
-            sendAiNews();
+            sendAiNews(test);
         } catch (Exception e) {
             logger.log(Level.SEVERE, "初始执行失败", e);
         }
@@ -88,7 +96,7 @@ public class ReadwiseNewsFetcher {
         Runnable task = () -> {
             try {
                 logger.info("开始执行定时任务...");
-                sendAiNews();
+                sendAiNews(test);
                 logger.info("定时任务执行完成");
             } catch (Exception e) {
                 logger.log(Level.SEVERE, "执行定时任务失败", e);
@@ -120,48 +128,62 @@ public class ReadwiseNewsFetcher {
         return delay;
     }
 
-    private static void sendAiNews() throws Exception {
+    private static void sendAiNews(boolean test) throws Exception {
         logger.info("开始获取 AI 新闻资讯...");
-    
+
         HttpClient client = HttpClient.newHttpClient();
         ObjectMapper mapper = new ObjectMapper();
-    
+
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(API_URL))
                 .header("Authorization", "Token " + TOKEN)
                 .GET()
                 .build();
-    
+
         HttpResponse<String> response =
                 client.send(request, HttpResponse.BodyHandlers.ofString());
-    
+
         if (response.statusCode() != 200) {
             throw new RuntimeException("API 请求失败，状态码：" + response.statusCode());
         }
-    
+
         JsonNode root = mapper.readTree(response.body());
         JsonNode results = root.get("results");
-    
+
         if (results == null || results.size() == 0) {
             logger.warning("未获取到任何新闻数据");
             return;
         }
-    
+
+        // 将结果转换为 List 并按 published_date 倒序排序
+        List<JsonNode> sortedResults = new ArrayList<>();
+        for (int i = 0; i < results.size(); i++) {
+            sortedResults.add(results.get(i));
+        }
+
+        // 按 published_date 倒序排序（最新的在前）
+        sortedResults.sort((o1, o2) -> {
+            String date1 = getText(o1, "published_date");
+            String date2 = getText(o2, "published_date");
+            // 倒序排序：日期越新越靠前
+            return date2.compareTo(date1);
+        });
+
         StringBuilder stringBuilder = new StringBuilder("AI 新闻资讯：\n");
         int count = 0;
-        for (int i = 1; i < results.size() && count < NEWS_MAX_COUNT; i++) {
-            JsonNode item = results.get(i);
-    
+        for (int i = 0; i < sortedResults.size() && count < NEWS_MAX_COUNT; i++) {
+            JsonNode item = sortedResults.get(i);
+
             String title = getText(item, "title");
             String url = getText(item, "source_url");
             String content = getText(item, "summary");
             String summary = generateSummary(content);
-    
+
             if (title.isEmpty() || url.isEmpty()) {
                 logger.warning("跳过无效数据：第" + i + "条");
                 continue;
             }
-    
+
             count++;
             stringBuilder.append(count).append(".");
             stringBuilder.append("标题：").append(title).append("\n");
@@ -170,18 +192,20 @@ public class ReadwiseNewsFetcher {
             }
             stringBuilder.append("链接：").append(url).append("\n").append("\n");
         }
-    
+
         if (count == 0) {
             logger.warning("没有有效的新闻数据可发送");
             return;
         }
-    
-        logger.info("生成新闻内容：" + stringBuilder.toString());
-            
+
+        logger.info("生成新闻内容：" + stringBuilder);
+
         ObjectNode postData = mapper.createObjectNode();
         postData.put("content", stringBuilder.toString());
-        postToTarget(client, mapper.writeValueAsString(postData));
-            
+        System.out.println(stringBuilder);
+        if (!test) {
+            postToTarget(client, mapper.writeValueAsString(postData));
+        }
         logger.info("新闻推送完成");
     }
 
