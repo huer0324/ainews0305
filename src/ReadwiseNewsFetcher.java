@@ -202,8 +202,9 @@ public class ReadwiseNewsFetcher {
 
         ObjectNode postData = mapper.createObjectNode();
         postData.put("content", stringBuilder.toString());
-        System.out.println(stringBuilder);
-        if (!test) {
+        if (test) {
+            System.out.println(stringBuilder);
+        } else {
             postToTarget(client, mapper.writeValueAsString(postData));
         }
         logger.info("新闻推送完成");
