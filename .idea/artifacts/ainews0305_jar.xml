@@ -1,0 +1,11 @@
+<component name="ArtifactManager">
+  <artifact type="jar" build-on-make="true" name="ainews0305:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/ainews0305_jar</output-path>
+    <root id="archive" name="ainews0305.jar">
+      <element id="module-output" name="ainews0305" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/lib/jackson-annotations-2.18.1.jar" path-in-jar="/" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/lib/jackson-core-2.18.1.jar" path-in-jar="/" />
+      <element id="extracted-dir" path="$PROJECT_DIR$/lib/jackson-databind-2.18.1.jar" path-in-jar="/" />
+    </root>
+  </artifact>
+</component>
