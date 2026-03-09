@@ -7,6 +7,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -58,17 +59,10 @@ public class ReadwiseNewsFetcher {
     }
 
     public static void main(String[] args) {
-        if (args.length != 1 || (!args[0].equals("0") && !args[0].equals("1"))) {
-            System.out.println("please start append 0[test] or 1[start].");
-            return;
-        }
-        boolean test = args[0].equals("0");
-
         logger.info("启动 Readwise News Fetcher...");
-
         // 启动直接发送一次
         try {
-            sendAiNews(test);
+            sendAiNews();
         } catch (Exception e) {
             logger.log(Level.SEVERE, "初始执行失败", e);
         }
@@ -95,8 +89,13 @@ public class ReadwiseNewsFetcher {
 
         Runnable task = () -> {
             try {
+                // 检查是否为工作日
+                if (!isWorkDay()) {
+                    logger.info("今天不是工作日，跳过执行");
+                    return;
+                }
                 logger.info("开始执行定时任务...");
-                sendAiNews(test);
+                sendAiNews();
                 logger.info("定时任务执行完成");
             } catch (Exception e) {
                 logger.log(Level.SEVERE, "执行定时任务失败", e);
@@ -128,7 +127,42 @@ public class ReadwiseNewsFetcher {
         return delay;
     }
 
-    private static void sendAiNews(boolean test) throws Exception {
+    private static boolean isWorkDay() {
+        try {
+            String dateStr = java.time.LocalDate.now().toString(); // 格式：yyyy-MM-dd
+            HttpClient client = HttpClient.newHttpClient();
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create("https://timor-api.com/json/" + dateStr))
+                    .GET()
+                    .build();
+            
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            
+            if (response.statusCode() == 200) {
+                ObjectMapper mapper = new ObjectMapper();
+                JsonNode root = mapper.readTree(response.body());
+                
+                // type: 0=节假日，1=调休日（需要上班），2=普通工作日
+                int type = root.has("type") ? root.get("type").asInt() : -1;
+                String note = root.has("note") ? root.get("note").asText() : "";
+                
+                boolean isWorkDay = (type == 1 || type == 2);
+                logger.info("节假日判断结果：" + (isWorkDay ? "工作日" : "节假日") + 
+                           (note.isEmpty() ? "" : " (" + note + ")"));
+                return isWorkDay;
+            }
+        } catch (Exception e) {
+            logger.warning("查询节假日 API 失败，降级为普通周末判断：" + e.getMessage());
+            // 降级处理：如果是周末则返回 false
+            DayOfWeek today = LocalDateTime.now().getDayOfWeek();
+            return today != DayOfWeek.SATURDAY && today != DayOfWeek.SUNDAY;
+        }
+        
+        // 默认返回 true（工作日）
+        return true;
+    }
+
+    private static void sendAiNews() throws Exception {
         logger.info("开始获取 AI 新闻资讯...");
 
         HttpClient client = HttpClient.newHttpClient();
@@ -202,11 +236,7 @@ public class ReadwiseNewsFetcher {
 
         ObjectNode postData = mapper.createObjectNode();
         postData.put("content", stringBuilder.toString());
-        if (test) {
-            System.out.println(stringBuilder);
-        } else {
-            postToTarget(client, mapper.writeValueAsString(postData));
-        }
+        postToTarget(client, mapper.writeValueAsString(postData));
         logger.info("新闻推送完成");
     }
 
