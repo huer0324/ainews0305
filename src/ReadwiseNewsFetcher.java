@@ -132,7 +132,7 @@ public class ReadwiseNewsFetcher {
             String dateStr = java.time.LocalDate.now().toString(); // 格式：yyyy-MM-dd
             HttpClient client = HttpClient.newHttpClient();
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create("https://timor-api.com/json/" + dateStr))
+                    .uri(URI.create("https://publicapi.xiaoai.me/holiday/day?" + dateStr))
                     .GET()
                     .build();
             
@@ -141,14 +141,11 @@ public class ReadwiseNewsFetcher {
             if (response.statusCode() == 200) {
                 ObjectMapper mapper = new ObjectMapper();
                 JsonNode root = mapper.readTree(response.body());
-                
-                // type: 0=节假日，1=调休日（需要上班），2=普通工作日
-                int type = root.has("type") ? root.get("type").asInt() : -1;
-                String note = root.has("note") ? root.get("note").asText() : "";
-                
-                boolean isWorkDay = (type == 1 || type == 2);
-                logger.info("节假日判断结果：" + (isWorkDay ? "工作日" : "节假日") + 
-                           (note.isEmpty() ? "" : " (" + note + ")"));
+
+                // 是否休息，0为不休息，1为休息
+                int rest = root.get("data").get(0).get("rest").asInt();
+                boolean isWorkDay = rest == 0;
+                logger.info("休息日判断结果：" + (isWorkDay ? "工作日" : "休息日"));
                 return isWorkDay;
             }
         } catch (Exception e) {

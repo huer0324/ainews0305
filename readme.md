@@ -37,13 +37,12 @@ ainews0305/
 
 编辑 `src/config.properties` 文件：
 
-```
-properties
+```properties
 # Readwise API 配置
 readwise.api.url=https://readwise.io/api/v3/list/
 readwise.api.token=你的 Readwise API Token
 
-# 目标推送地址
+# 目标推送地址（企业微信/云之翼等 Webhook）
 webhook.target.url=你的 Webhook 接收地址
 
 # 定时任务配置 (每天 8:00:00 执行)
@@ -65,7 +64,35 @@ news.max.count=3              # 每次获取的新闻数量
 6. **数据处理**：提取标题、链接和摘要
 7. **推送消息**：将格式化后的新闻推送到 Webhook 地址
 
-## 启动模式
+## 快速开始
+
+### 1. 编译打包
+
+```bash
+# 在项目根目录下执行
+javac -d out src/ReadwiseNewsFetcher.java
+jar cfm ainews0305.jar MANIFEST.MF -C out .
+```
+
+### 2. 配置参数
+
+编辑 `src/config.properties` 文件，填入你的 API Token 和 Webhook 地址
+
+### 3. 启动程序
+
+**测试模式**（验证功能）：
+```bash
+java -jar ainews0305.jar 0
+```
+
+**正式运行**（后台服务）：
+```bash
+nohup java -jar ainews0305.jar 1 > output.log 2>&1 &
+```
+
+---
+
+## 启动模式详解
 
 ### 测试模式（参数 0）
 ```bash
@@ -84,15 +111,37 @@ nohup java -jar ainews0305.jar 1 > output.log 2>&1 &
 - 仅在工作日发送消息
 - 日志输出到 `output.log` 文件
 
-## 节假日判断机制
+---
 
-程序会调用 [timor-api](https://timor-api.com/) 接口判断当天是否为工作日：
+## 节假日判断机制详解
 
-- **type = 0**：节假日 → 跳过执行
-- **type = 1**：调休日（周末上班）→ 正常执行
-- **type = 2**：普通工作日 → 正常执行
+### API 接口说明
 
-**降级策略**：如果 API 查询失败，自动降级为普通周末判断（周六日休息）
+程序调用 [timor-api](https://timor-api.com/) 提供的免费节假日查询接口：
+
+| 返回类型 | 说明 | 程序行为 |
+|---------|------|---------|
+| type = 0 | 法定节假日 | ❌ 跳过不发送 |
+| type = 1 | 调休日（周末上班） | ✅ 正常发送 |
+| type = 2 | 普通工作日 | ✅ 正常发送 |
+| type = -1 | 普通周末 | ❌ 跳过不发送 |
+
+### 降级策略
+
+当遇到以下情况时，自动降级为本地周末判断：
+- 网络异常无法访问 API
+- API 服务不可用
+- 响应数据格式错误
+
+**降级逻辑**：仅判断是否为周六或周日，不考虑调休安排
+
+### 示例日志输出
+
+```
+[INFO] 节假日判断结果：工作日 (劳动节调休)
+[INFO] 节假日判断结果：节假日 (国庆节)
+[WARNING] 查询节假日 API 失败，降级为普通周末判断
+```
 
 ## 启用与关闭
 
@@ -127,7 +176,11 @@ java -jar ainews0305.jar 0
 nohup java -jar ainews0305.jar 1 > output.log 2>&1 &
 ```
 
-### 查看运行状态
+---
+
+## 运维管理
+
+### 查看进程状态
 
 ```bash
 # 查看 Java 进程
@@ -154,11 +207,54 @@ kill -9 <进程 ID>
 tail -f output.log
 ```
 
-## 注意事项
+---
 
-1. **配置文件安全**：`config.properties` 包含敏感信息，请勿提交到 Git 仓库
-2. **节假日 API**：依赖第三方 API，网络异常时会自动降级为普通周末判断
-3. **时区设置**：确保服务器时区正确，否则定时任务可能不准确
-4. **日志管理**：定期清理 `output.log` 文件，避免占用过多磁盘空间
+## 常见问题 FAQ
+
+### Q1: 如何确认程序是否正常运行？
+查看日志文件 `output.log`，应该能看到类似输出：
+```
+[INFO] 启动 Readwise News Fetcher... [正式模式]
+[INFO] 节假日判断结果：工作日
+[INFO] 距离下次执行还有：XXXX 秒
+[INFO] 定时任务已启动
+```
+
+### Q2: 为什么周末没有收到消息？
+程序已启用智能节假日判断，周末和节假日会自动跳过。如需在周末测试，请使用测试模式（参数 0）。
+
+### Q3: 如何修改定时任务执行时间？
+编辑 `config.properties`，调整以下参数：
+```properties
+scheduler.hour=9      # 改为 9 点
+scheduler.minute=30   # 改为 30 分
+```
+
+### Q4: 配置文件包含敏感信息怎么办？
+确保 `config.properties` 已添加到 `.gitignore`，避免提交到代码仓库。
+
+---
+
+## 注意事项与最佳实践
+
+### 安全与配置
+
+1. **配置文件安全**：`config.properties` 包含敏感信息，必须添加到 `.gitignore`
+2. **时区设置**：确保服务器时区正确（推荐使用 UTC+8 北京时间）
+
+### 运维与维护
+
+3. **日志管理**：定期清理或归档 `output.log`，建议配置日志轮转
+4. **监控告警**：可在服务器上配置监控脚本，检测进程存活状态
+
+### API 依赖
+
+5. **节假日 API**：依赖第三方服务，极端情况下可能影响判断准确性
+6. **Readwise API**：需确保 API Token 有效，注意调用频率限制
+
+### 性能优化
+
+7. **资源占用**：程序内存占用约 50-100MB，适合长期运行
+8. **优雅关闭**：建议使用 `kill` 而非 `kill -9`，确保数据完整性
 
 
