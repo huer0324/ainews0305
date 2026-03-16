@@ -19,12 +19,14 @@ import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public class ReadwiseNewsFetcher {
+/**
+ * AI 新闻获取器 - 支持多源 API 聚合
+ */
+public class AiNewsFetcher {
 
-    private static final Logger logger = Logger.getLogger(ReadwiseNewsFetcher.class.getName());
+    private static final Logger logger = Logger.getLogger(AiNewsFetcher.class.getName());
     private static final Properties config = new Properties();
-    private static final String API_URL;
-    private static final String TOKEN;
+    private static final List<NewsApiProvider> API_PROVIDERS;
     private static final String TARGET_POST_URL;
     private static final int SCHEDULER_HOUR;
     private static final int SCHEDULER_MINUTE;
@@ -33,7 +35,7 @@ public class ReadwiseNewsFetcher {
     private static final int NEWS_MAX_COUNT;
 
     static {
-        try (InputStream input = ReadwiseNewsFetcher.class.getClassLoader()
+        try (InputStream input = AiNewsFetcher.class.getClassLoader()
                 .getResourceAsStream("config.properties")) {
             if (input == null) {
                 logger.severe("无法找到配置文件 config.properties");
@@ -42,8 +44,8 @@ public class ReadwiseNewsFetcher {
             config.load(input);
             
             // 从配置文件加载参数
-            API_URL = config.getProperty("readwise.api.url");
-            TOKEN = config.getProperty("readwise.api.token");
+            String apiConfigStr = config.getProperty("readwise.api.config");
+            API_PROVIDERS = createApiProviders(apiConfigStr);
             TARGET_POST_URL = config.getProperty("webhook.target.url");
             SCHEDULER_HOUR = Integer.parseInt(config.getProperty("scheduler.hour", "8"));
             SCHEDULER_MINUTE = Integer.parseInt(config.getProperty("scheduler.minute", "0"));
@@ -51,7 +53,10 @@ public class ReadwiseNewsFetcher {
             SUMMARY_MAX_LENGTH = Integer.parseInt(config.getProperty("summary.max.length", "300"));
             NEWS_MAX_COUNT = Integer.parseInt(config.getProperty("news.max.count", "3"));
             
-            logger.info("配置文件加载成功");
+            logger.info("配置文件加载成功，共配置 " + API_PROVIDERS.size() + " 个 API 提供者");
+            for (NewsApiProvider provider : API_PROVIDERS) {
+                logger.info("  - " + provider.getName() + ": " + provider.getUrl());
+            }
         } catch (IOException e) {
             logger.log(Level.SEVERE, "读取配置文件失败", e);
             throw new RuntimeException("读取配置文件失败", e);
@@ -62,7 +67,7 @@ public class ReadwiseNewsFetcher {
         logger.info("启动 Readwise News Fetcher...");
         // 启动直接发送一次
         try {
-            sendAiNews();
+//            sendAiNews();
         } catch (Exception e) {
             logger.log(Level.SEVERE, "初始执行失败", e);
         }
@@ -142,7 +147,7 @@ public class ReadwiseNewsFetcher {
                 ObjectMapper mapper = new ObjectMapper();
                 JsonNode root = mapper.readTree(response.body());
 
-                // 是否休息，0为不休息，1为休息
+                // 是否休息，0 为不休息，1 为休息
                 int rest = root.get("data").get(0).get("rest").asInt();
                 boolean isWorkDay = rest == 0;
                 logger.info("休息日判断结果：" + (isWorkDay ? "工作日" : "休息日"));
@@ -159,41 +164,96 @@ public class ReadwiseNewsFetcher {
         return true;
     }
 
+    /**
+     * 创建 API 提供者列表
+     */
+    private static List<NewsApiProvider> createApiProviders(String configStr) {
+        List<NewsApiProvider> providers = new ArrayList<>();
+        
+        if (configStr == null || configStr.trim().isEmpty()) {
+            logger.warning("未配置 API Providers，使用默认值");
+            providers.add(new HttpNewsApiProvider("Readwise", "https://readwise.io/api/v3/list/", ""));
+            return providers;
+        }
+        
+        // 格式：name1|url1|token1,name2|url2|token2
+        String[] parts = configStr.split(",");
+        for (String part : parts) {
+            String trimmedPart = part.trim();
+            if (!trimmedPart.isEmpty()) {
+                String[] items = trimmedPart.split("\\|");
+                if (items.length >= 3) {
+                    // name|url|token
+                    providers.add(new HttpNewsApiProvider(items[0].trim(), items[1].trim(), items[2].trim()));
+                } else if (items.length == 2) {
+                    // name|url
+                    String name = items[0].trim();
+                    String url = items[1].trim();
+                    providers.add(new HttpNewsApiProvider(name, url, ""));
+                } else if (items.length == 1) {
+                    // 只配置了 URL
+                    String url = items[0].trim();
+                    String name = extractApiName(url);
+                    providers.add(new HttpNewsApiProvider(name, url, ""));
+                }
+            }
+        }
+        
+        if (providers.isEmpty()) {
+            providers.add(new HttpNewsApiProvider("Readwise", "https://readwise.io/api/v3/list/", ""));
+        }
+        
+        return providers;
+    }
+    
+    /**
+     * 从 URL 提取 API 名称
+     */
+    private static String extractApiName(String url) {
+        try {
+            java.net.URI uri = new java.net.URI(url);
+            String host = uri.getHost();
+            if (host != null) {
+                // 移除 www.前缀和.com/.io 等后缀
+                return host.replaceFirst("^www\\.", "").split("\\.")[0].toUpperCase();
+            }
+        } catch (Exception e) {
+            // 忽略异常，返回默认名称
+        }
+        return "API-" + System.currentTimeMillis();
+    }
+
     private static void sendAiNews() throws Exception {
         logger.info("开始获取 AI 新闻资讯...");
 
         HttpClient client = HttpClient.newHttpClient();
         ObjectMapper mapper = new ObjectMapper();
+        List<JsonNode> allResults = new ArrayList<>();
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_URL))
-                .header("Authorization", "Token " + TOKEN)
-                .GET()
-                .build();
-
-        HttpResponse<String> response =
-                client.send(request, HttpResponse.BodyHandlers.ofString());
-
-        if (response.statusCode() != 200) {
-            throw new RuntimeException("API 请求失败，状态码：" + response.statusCode());
+        // 从多个 API 提供者获取数据
+        for (NewsApiProvider provider : API_PROVIDERS) {
+            try {
+                List<JsonNode> results = provider.fetchNews(client, mapper, NEWS_MAX_COUNT);
+                allResults.addAll(results);
+            } catch (Exception e) {
+                logger.severe(provider.getName() + " 获取数据失败：" + e.getMessage());
+                // 继续处理其他 API
+            }
         }
 
-        JsonNode root = mapper.readTree(response.body());
-        JsonNode results = root.get("results");
-
-        if (results == null || results.size() == 0) {
-            logger.warning("未获取到任何新闻数据");
+        if (allResults.isEmpty()) {
+            logger.warning("所有 API 都未获取到有效数据");
             return;
         }
 
-        // 将结果转换为 List 并按 published_date 倒序排序
-        List<JsonNode> sortedResults = new ArrayList<>();
-        for (int i = 0; i < results.size(); i++) {
-            sortedResults.add(results.get(i));
-        }
+        logger.info("总共获取到 " + allResults.size() + " 条原始数据");
+
+        // 去重（根据 title + source_url 判断）
+        List<JsonNode> uniqueResults = deduplicateNews(allResults);
+        logger.info("去重后剩余 " + uniqueResults.size() + " 条数据");
 
         // 按 published_date 倒序排序（最新的在前）
-        sortedResults.sort((o1, o2) -> {
+        uniqueResults.sort((o1, o2) -> {
             String date1 = getText(o1, "published_date");
             String date2 = getText(o2, "published_date");
             // 倒序排序：日期越新越靠前
@@ -202,8 +262,10 @@ public class ReadwiseNewsFetcher {
 
         StringBuilder stringBuilder = new StringBuilder("AI 新闻资讯：\n");
         int count = 0;
-        for (int i = 0; i < sortedResults.size() && count < NEWS_MAX_COUNT; i++) {
-            JsonNode item = sortedResults.get(i);
+        for (JsonNode item : uniqueResults) {
+            if (count >= NEWS_MAX_COUNT) {
+                break;
+            }
 
             String title = getText(item, "title");
             String url = getText(item, "source_url");
@@ -211,7 +273,7 @@ public class ReadwiseNewsFetcher {
             String summary = generateSummary(content);
 
             if (title.isEmpty() || url.isEmpty()) {
-                logger.warning("跳过无效数据：第" + i + "条");
+                logger.warning("跳过无效数据：" + title);
                 continue;
             }
 
@@ -221,7 +283,10 @@ public class ReadwiseNewsFetcher {
             if (!"无内容".equals(summary) && !summary.isEmpty()) {
                 stringBuilder.append("摘要：").append(summary).append("\n");
             }
-            stringBuilder.append("链接：").append(url).append("\n").append("\n");
+            stringBuilder.append("链接：").append(url).append("\n");
+            if (count < NEWS_MAX_COUNT) {
+                stringBuilder.append("\n");
+            }
         }
 
         if (count == 0) {
@@ -259,6 +324,26 @@ public class ReadwiseNewsFetcher {
         logger.info("推送成功，响应结果：" + postResponse.body());
     }
 
+    private static List<JsonNode> deduplicateNews(List<JsonNode> allResults) {
+        List<JsonNode> uniqueResults = new ArrayList<>();
+        java.util.Set<String> seenKeys = new java.util.HashSet<>();
+        
+        for (JsonNode node : allResults) {
+            String title = getText(node, "title");
+            String url = getText(node, "source_url");
+            
+            // 使用 title + source_url 作为唯一键
+            String uniqueKey = title + "|||" + url;
+            
+            if (!seenKeys.contains(uniqueKey)) {
+                seenKeys.add(uniqueKey);
+                uniqueResults.add(node);
+            }
+        }
+        
+        return uniqueResults;
+    }
+
     private static String getText(JsonNode node, String field) {
         if (node == null) {
             return "";
@@ -272,8 +357,10 @@ public class ReadwiseNewsFetcher {
         if (text == null || text.isEmpty()) {
             return "无内容";
         }
-        return text.length() <= SUMMARY_MAX_LENGTH
-                ? text
-                : text.substring(0, SUMMARY_MAX_LENGTH) + "...";
+        // 去除空行（多个连续换行），但保留单个换行符
+        String cleanedText = text.replaceAll("\r?\n[ \t]*\r?\n", "\n").trim();
+        return cleanedText.length() <= SUMMARY_MAX_LENGTH
+                ? cleanedText
+                : cleanedText.substring(0, SUMMARY_MAX_LENGTH) + "...";
     }
 }

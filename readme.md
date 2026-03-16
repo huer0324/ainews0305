@@ -21,7 +21,7 @@
 ```
 ainews0305/
 ├── src/
-│   ├── ReadwiseNewsFetcher.java    # 主程序
+│   ├── AiNewsFetcher.java    # 主程序
 │   └── config.properties           # 配置文件
 ├── ainews0305.iml
 └── README.md
@@ -70,7 +70,7 @@ news.max.count=3              # 每次获取的新闻数量
 
 ```bash
 # 在项目根目录下执行
-javac -d out src/ReadwiseNewsFetcher.java
+javac -d out src/AiNewsFetcher.java
 jar cfm ainews0305.jar MANIFEST.MF -C out .
 ```
 
