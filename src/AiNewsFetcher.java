@@ -27,7 +27,7 @@ public class AiNewsFetcher {
     private static final Logger logger = Logger.getLogger(AiNewsFetcher.class.getName());
     private static final Properties config = new Properties();
     private static final List<NewsApiProvider> API_PROVIDERS;
-    private static final String TARGET_POST_URL;
+    private static final List<String> TARGET_POST_URLS;
     private static final int SCHEDULER_HOUR;
     private static final int SCHEDULER_MINUTE;
     private static final int SCHEDULER_SECOND;
@@ -46,7 +46,7 @@ public class AiNewsFetcher {
             // 从配置文件加载参数
             String apiConfigStr = config.getProperty("readwise.api.config");
             API_PROVIDERS = createApiProviders(apiConfigStr);
-            TARGET_POST_URL = config.getProperty("webhook.target.url");
+            TARGET_POST_URLS = createTargetUrls(config.getProperty("webhook.target.url"));
             SCHEDULER_HOUR = Integer.parseInt(config.getProperty("scheduler.hour", "8"));
             SCHEDULER_MINUTE = Integer.parseInt(config.getProperty("scheduler.minute", "0"));
             SCHEDULER_SECOND = Integer.parseInt(config.getProperty("scheduler.second", "0"));
@@ -56,6 +56,10 @@ public class AiNewsFetcher {
             logger.info("配置文件加载成功，共配置 " + API_PROVIDERS.size() + " 个 API 提供者");
             for (NewsApiProvider provider : API_PROVIDERS) {
                 logger.info("  - " + provider.getName() + ": " + provider.getUrl());
+            }
+            logger.info("共配置 " + TARGET_POST_URLS.size() + " 个推送目标地址");
+            for (String url : TARGET_POST_URLS) {
+                logger.info("  - " + url);
             }
         } catch (IOException e) {
             logger.log(Level.SEVERE, "读取配置文件失败", e);
@@ -207,6 +211,35 @@ public class AiNewsFetcher {
     }
     
     /**
+     * 创建目标推送地址列表
+     */
+    private static List<String> createTargetUrls(String configStr) {
+        List<String> urls = new ArrayList<>();
+        
+        if (configStr == null || configStr.trim().isEmpty()) {
+            logger.warning("未配置推送目标地址");
+            return urls;
+        }
+        
+        // 支持逗号或分号分隔多个 URL
+        String[] parts = configStr.split("[,;]");
+        for (String part : parts) {
+            String trimmedPart = part.trim();
+            if (!trimmedPart.isEmpty()) {
+                urls.add(trimmedPart);
+            }
+        }
+        
+        if (urls.isEmpty()) {
+            logger.warning("有效的推送目标地址为空");
+        } else {
+            logger.info("成功加载 " + urls.size() + " 个推送目标地址");
+        }
+        
+        return urls;
+    }
+    
+    /**
      * 从 URL 提取 API 名称
      */
     private static String extractApiName(String url) {
@@ -270,7 +303,16 @@ public class AiNewsFetcher {
             String title = getText(item, "title");
             String url = getText(item, "source_url");
             String content = getText(item, "summary");
-            String summary = generateSummary(content);
+            
+            // 根据 URL 来源选择不同的摘要生成方式
+            String summary;
+            if (url.contains("bestblogs")) {
+                // 对于 bestblogs 来源，提取一句话摘要
+                summary = extractOneSentenceSummary(content);
+            } else {
+                // 其他来源使用普通摘要生成
+                summary = generateSummary(content);
+            }
 
             if (title.isEmpty() || url.isEmpty()) {
                 logger.warning("跳过无效数据：" + title);
@@ -298,30 +340,58 @@ public class AiNewsFetcher {
 
         ObjectNode postData = mapper.createObjectNode();
         postData.put("content", stringBuilder.toString());
-        postToTarget(client, mapper.writeValueAsString(postData));
+        postToAllTargets(client, mapper.writeValueAsString(postData));
         logger.info("新闻推送完成");
     }
 
-    private static void postToTarget(HttpClient client, String json) throws Exception {
-        logger.info("开始推送到目标地址...");
-    
-        HttpRequest postRequest = HttpRequest.newBuilder()
-                .uri(URI.create(TARGET_POST_URL))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(json))
-                .build();
-    
-        HttpResponse<String> postResponse =
-                client.send(postRequest, HttpResponse.BodyHandlers.ofString());
-    
-        logger.info("POST 状态码：" + postResponse.statusCode());
-            
-        if (postResponse.statusCode() != 200) {
-            logger.warning("推送失败，响应结果：" + postResponse.body());
-            throw new RuntimeException("推送失败，状态码：" + postResponse.statusCode());
+    /**
+     * 推送至所有目标地址
+     */
+    private static void postToAllTargets(HttpClient client, String json) throws Exception {
+        if (TARGET_POST_URLS.isEmpty()) {
+            logger.warning("没有配置推送目标地址");
+            return;
         }
+        
+        logger.info("开始推送到 " + TARGET_POST_URLS.size() + " 个目标地址...");
+        
+        int successCount = 0;
+        int failCount = 0;
+        
+        for (String url : TARGET_POST_URLS) {
+            try {
+                logger.info("正在推送到：" + url);
+                
+                HttpRequest postRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(json))
+                        .build();
             
-        logger.info("推送成功，响应结果：" + postResponse.body());
+                HttpResponse<String> postResponse =
+                        client.send(postRequest, HttpResponse.BodyHandlers.ofString());
+            
+                logger.info("推送到 " + url + " 的状态码：" + postResponse.statusCode());
+                    
+                if (postResponse.statusCode() != 200) {
+                    logger.warning("推送到 " + url + " 失败，响应结果：" + postResponse.body());
+                    failCount++;
+                } else {
+                    logger.info("推送到 " + url + " 成功");
+                    successCount++;
+                }
+            } catch (Exception e) {
+                logger.severe("推送到 " + url + " 时发生异常：" + e.getMessage());
+                failCount++;
+            }
+        }
+        
+        logger.info("推送完成统计：成功 " + successCount + "/" + TARGET_POST_URLS.size() + 
+                   "，失败 " + failCount + "/" + TARGET_POST_URLS.size());
+        
+        if (failCount > 0) {
+            throw new RuntimeException("部分推送目标失败，失败数：" + failCount);
+        }
     }
 
     private static List<JsonNode> deduplicateNews(List<JsonNode> allResults) {
@@ -362,5 +432,36 @@ public class AiNewsFetcher {
         return cleanedText.length() <= SUMMARY_MAX_LENGTH
                 ? cleanedText
                 : cleanedText.substring(0, SUMMARY_MAX_LENGTH) + "...";
+    }
+
+    /**
+     * 从文本中提取一句话摘要
+     * @param text 输入文本
+     * @return 提取的摘要内容
+     */
+    private static String extractOneSentenceSummary(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        
+        try {
+            // 匹配"一句话摘要"后面的内容（直到遇到"详细摘要"或文本结束）
+            // 使用 [\s\S] 匹配包括换行符在内的所有字符
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
+                "一句话摘要\\s*([\\s\\S]*?)(?:详细摘要|$)",
+                java.util.regex.Pattern.MULTILINE
+            );
+            java.util.regex.Matcher matcher = pattern.matcher(text);
+            
+            if (matcher.find()) {
+                // 提取内容并去除首尾空白（包括换行符）
+                String summary = matcher.group(1).trim();
+                logger.info("提取到一句话摘要：" + summary);
+                return summary;
+            }
+        } catch (Exception e) {
+            logger.warning("正则表达式提取失败：" + e.getMessage());
+        }
+        return text;
     }
 }
